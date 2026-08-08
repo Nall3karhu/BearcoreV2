@@ -2,6 +2,7 @@ import json
 
 from modules.memory.memory import Memory
 from modules.memory.context_manager import ContextManager
+from modules.memory.memory_manager import MemoryManager
 
 from modules.conversation.conversation import Conversation
 
@@ -17,46 +18,158 @@ class BearCore:
     def __init__(self):
         self.name = "BearCore"
 
-        # Memory
+        # -----------------------------------------
+        # MEMORY
+        # -----------------------------------------
+
+        # Vanha muistijärjestelmä pidetään mukana
+        # varmistuksena.
         self.memory = Memory()
 
-        # Smart context
+        # Uusi älykkäämpi muistijärjestelmä
+        self.memory_manager = MemoryManager(
+            max_memories=100
+        )
+
+        # Kontekstin hallinta
         self.context_manager = ContextManager(
             max_history=6,
             max_memories=5
         )
 
-        # Conversation
+        # -----------------------------------------
+        # CONVERSATION
+        # -----------------------------------------
+
         self.conversation = Conversation()
 
-        # Tools
+        # -----------------------------------------
+        # TOOLS
+        # -----------------------------------------
+
         self.tools = Tools()
+
         self.tool_manager = ToolManager(
             self.tools
         )
 
+        # -----------------------------------------
         # AI
+        # -----------------------------------------
+
         self.ai = AI()
         self.local_ai = LocalAI()
 
-        # AI Router
         self.ai_router = AIRouter()
 
-        # Performance
+        # -----------------------------------------
+        # PERFORMANCE
+        # -----------------------------------------
+
         self.max_tool_rounds = 3
 
+    # =============================================
+    # MEMORY CONTEXT
+    # =============================================
+
+    def _get_memory_context(self, message):
+        """
+        Hakee uuden MemoryManagerin avulla
+        tähän kysymykseen liittyvät muistot.
+        """
+
+        memories = self.memory_manager.search(
+            message,
+            limit=5
+        )
+
+        if not memories:
+            return ""
+
+        lines = [
+            "Relevantti pitkäaikainen muisti:"
+        ]
+
+        for memory in memories:
+            text = memory.get(
+                "text",
+                ""
+            )
+
+            category = memory.get(
+                "category",
+                "unknown"
+            )
+
+            lines.append(
+                f"- [{category}] {text}"
+            )
+
+        return "\n".join(lines)
+
+    # =============================================
+    # CONTEXT
+    # =============================================
+
     def _build_context(self, message):
-        memories = self.memory.get_memories()
+        """
+        Rakentaa AI:lle mahdollisimman pienen
+        mutta relevantin kontekstin.
+        """
+
+        parts = []
+
+        # -----------------------------------------
+        # Smart Memory V2
+        # -----------------------------------------
+
+        memory_context = (
+            self._get_memory_context(
+                message
+            )
+        )
+
+        if memory_context:
+            parts.append(
+                memory_context
+            )
+
+        # -----------------------------------------
+        # Vanha Memory + Conversation
+        # -----------------------------------------
+
+        old_memories = self.memory.get_memories()
 
         history = (
             self.conversation.get_history()
         )
 
-        return self.context_manager.build_context(
-            message,
-            memories,
-            history
+        # ContextManager hoitaa viimeisimmän
+        # keskustelun ja vanhan muistijärjestelmän.
+        old_context = (
+            self.context_manager.build_context(
+                message,
+                old_memories,
+                history
+            )
         )
+
+        if old_context:
+            parts.append(
+                old_context
+            )
+
+        if not parts:
+            return (
+                "Relevanttia muistia tai "
+                "keskusteluhistoriaa ei ole."
+            )
+
+        return "\n\n".join(parts)
+
+    # =============================================
+    # SYSTEM PROMPT
+    # =============================================
 
     def _build_system_prompt(self, message):
         context = self._build_context(
@@ -73,19 +186,21 @@ class BearCore:
             "Ole yleensä ytimekäs, ellei käyttäjä "
             "pyydä tarkempaa selitystä.\n\n"
 
-            "Käytä alla olevaa kontekstia vain "
-            "tarvittaessa.\n"
+            "Käytä annettua muistia vain silloin, "
+            "kun siitä on hyötyä vastaukselle.\n"
 
             "Älä keksi käyttäjästä asioita, "
-            "joita kontekstissa ei ole.\n\n"
+            "joita muistissa ei ole.\n\n"
 
+            "KONTEKSTI:\n"
             f"{context}"
         )
 
-    def _execute_tool_call(
-        self,
-        tool_call
-    ):
+    # =============================================
+    # TOOL EXECUTION
+    # =============================================
+
+    def _execute_tool_call(self, tool_call):
         function = tool_call.get(
             "function",
             {}
@@ -117,6 +232,10 @@ class BearCore:
             **arguments
         )
 
+    # =============================================
+    # LOCAL AI
+    # =============================================
+
     def _run_local_ai(
         self,
         message,
@@ -144,6 +263,7 @@ class BearCore:
         for _ in range(
             self.max_tool_rounds
         ):
+
             response = ai.chat(
                 messages,
                 tools=tools,
@@ -153,9 +273,11 @@ class BearCore:
             if "error" in response:
                 return response["error"]
 
-            assistant_message = response.get(
-                "message",
-                {}
+            assistant_message = (
+                response.get(
+                    "message",
+                    {}
+                )
             )
 
             messages.append(
@@ -169,13 +291,25 @@ class BearCore:
                 )
             )
 
+            # -------------------------------------
+            # Normaali vastaus
+            # -------------------------------------
+
             if not tool_calls:
-                return assistant_message.get(
-                    "content",
-                    "BearCore ei saanut vastausta."
+
+                return (
+                    assistant_message.get(
+                        "content",
+                        "BearCore ei saanut vastausta."
+                    )
                 )
 
+            # -------------------------------------
+            # Työkalut
+            # -------------------------------------
+
             for tool_call in tool_calls:
+
                 result = (
                     self._execute_tool_call(
                         tool_call
@@ -185,9 +319,11 @@ class BearCore:
                 messages.append(
                     {
                         "role": "tool",
-                        "tool_name": tool_call[
-                            "function"
-                        ]["name"],
+                        "tool_name": (
+                            tool_call[
+                                "function"
+                            ]["name"]
+                        ),
                         "content": str(result)
                     }
                 )
@@ -197,24 +333,45 @@ class BearCore:
             "saavutettiin."
         )
 
+    # =============================================
+    # MAIN PROCESS
+    # =============================================
+
     def process(self, message):
         message = message.strip()
 
         if not message:
             return "Et kirjoittanut mitään."
 
-        # Save user message
+        # -----------------------------------------
+        # Tallenna keskusteluun
+        # -----------------------------------------
+
         self.conversation.add_message(
             "user",
             message
         )
 
-        # Save to persistent memory
+        # -----------------------------------------
+        # Vanha pysyvä muisti
+        # -----------------------------------------
+
         self.memory.remember(
             message
         )
 
-        # Local AI
+        # -----------------------------------------
+        # Uusi Smart Memory V2
+        # -----------------------------------------
+
+        self.memory_manager.remember(
+            message
+        )
+
+        # -----------------------------------------
+        # AI Router
+        # -----------------------------------------
+
         if self.ai_router.is_available():
 
             selected_ai = (
@@ -228,7 +385,10 @@ class BearCore:
                 selected_ai
             )
 
+        # -----------------------------------------
         # OpenAI fallback
+        # -----------------------------------------
+
         elif self.ai.is_available():
 
             response = self.ai.ask(
@@ -240,14 +400,20 @@ class BearCore:
                 )
             )
 
+        # -----------------------------------------
         # Basic fallback
+        # -----------------------------------------
+
         else:
 
             response = (
                 f"Vastaanotettu: {message}"
             )
 
-        # Save response
+        # -----------------------------------------
+        # Tallenna BearCoren vastaus
+        # -----------------------------------------
+
         self.conversation.add_message(
             "bearcore",
             response
